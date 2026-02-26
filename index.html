@@ -1,38 +1,39 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Mines Housing Heatmap</title>
+    <title>Mines Housing Tactical Map</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
-        body { font-family: 'Segoe UI', sans-serif; margin: 0; background: #1a1a1a; color: white; overflow: hidden; }
-        #map { height: 90vh; width: 100%; background: #222; cursor: crosshair; }
-        .controls { padding: 10px; background: #222; display: flex; justify-content: center; gap: 20px; align-items: center; border-bottom: 1px solid #444; }
-        select, button { padding: 8px; border-radius: 4px; border: none; background: #444; color: white; cursor: pointer; }
+        body { font-family: sans-serif; margin: 0; background: #1a1a1a; color: white; overflow: hidden; }
+        #map { height: 90vh; width: 100%; background: #222; }
+        .controls { padding: 10px; background: #222; display: flex; justify-content: center; gap: 15px; align-items: center; border-bottom: 1px solid #444; }
         .hint { font-size: 0.8rem; color: #aaa; }
+        button { cursor: pointer; background: #d4af37; color: black; border: none; padding: 8px 15px; font-weight: bold; border-radius: 4px; }
     </style>
 </head>
 <body>
 
     <div class="controls">
-        <h1>Mines Housing Map</h1>
-        <select id="floorSelect" onchange="changeFloor(this.value)">
+        <select id="floorSelect" onchange="switchFloor(this.value)">
             <option value="Floor 1">Floor 1</option>
             <option value="Floor 2">Floor 2</option>
             <option value="Floor 3">Floor 3</option>
         </select>
-        <div class="hint"><b>Left-Click + Drag:</b> Paint | <b>Shift + Drag:</b> Move Map | <b>Scroll:</b> Zoom</div>
-        <button onclick="exportData()">Export Selection</button>
+        <div class="hint"><b>Drag:</b> Move Map | <b>Shift + Drag:</b> Paint Tiles</div>
+        <button onclick="submitToCloud()">Submit My Picks</button>
     </div>
 
     <div id="map"></div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        // 1. CONFIGURATION
-        var imgWidth = 2000;
-        var imgHeight = 1500;
-        var gridSize = 25; // Higher resolution (smaller tiles)
-        var isPanning = false;
+        // --- 1. CONFIG & STATE ---
+        var imgWidth = 2000, imgHeight = 1500;
+        var gridSize = 30;
+        var currentFloor = "Floor 1";
+        
+        // This stores which IDs are selected per floor: { "Floor 1": [id1, id2], "Floor 2": [] }
+        var selections = { "Floor 1": [], "Floor 2": [], "Floor 3": [] };
 
         var floorPlans = {
             "Floor 1": "floor1.png",
@@ -40,100 +41,86 @@
             "Floor 3": "floor3.png"
         };
 
-        // 2. SETUP MAP
+        // --- 2. INITIALIZE MAP ---
         var map = L.map('map', {
             crs: L.CRS.Simple,
             minZoom: -1,
             maxZoom: 3,
-            dragging: false, // Disable default dragging to allow "Paint Mode"
-            scrollWheelZoom: true
+            dragging: true // Default dragging back on!
         });
 
         var southWest = map.unproject([0, imgHeight], map.getMaxZoom()-1);
         var northEast = map.unproject([imgWidth, 0], map.getMaxZoom()-1);
         var bounds = new L.LatLngBounds(southWest, northEast);
-
-        var currentImageLayer = L.imageOverlay(floorPlans["Floor 1"], bounds).addTo(map);
+        var imgOverlay = L.imageOverlay(floorPlans[currentFloor], bounds).addTo(map);
         map.fitBounds(bounds);
 
-        // 3. TOGGLE DRAGGING (Shift Key Logic)
-        document.addEventListener('keydown', (e) => { if(e.key === "Shift") map.dragging.enable(); });
-        document.addEventListener('keyup', (e) => { if(e.key === "Shift") map.dragging.disable(); });
-        
-        // Middle Mouse Dragging
-        map.on('mousedown', (e) => {
-            if (e.originalEvent.button === 1) { // Middle mouse
-                map.dragging.enable();
-            }
-        });
-        map.on('mouseup', (e) => {
-            if (e.originalEvent.button === 1) {
-                map.dragging.disable();
-            }
-        });
+        // --- 3. GRID SYSTEM ---
+        var tileLayers = L.layerGroup().addTo(map);
+        var tileLookup = {}; // To easily find tiles by ID
 
-        // 4. PAINTING LOGIC
-        var isDrawing = false;
-        var tileLayer = L.layerGroup().addTo(map);
+        function generateGrid() {
+            tileLayers.clearLayers();
+            for (var x = 0; x < imgWidth; x += gridSize) {
+                for (var y = 0; y < imgHeight; y += gridSize) {
+                    var id = x + "_" + y;
+                    var p1 = map.unproject([x, y], map.getMaxZoom()-1);
+                    var p2 = map.unproject([x + gridSize, y + gridSize], map.getMaxZoom()-1);
+                    
+                    var rect = L.rectangle([p1, p2], {
+                        color: "rgba(51, 136, 255, 0.15)", // Very faint blue
+                        weight: 1,
+                        fillOpacity: 0,
+                        interactive: true
+                    });
+                    
+                    rect.tileId = id;
+                    
+                    // Interaction: Only paint if Shift is held
+                    rect.on('mouseover mousedown', function(e) {
+                        if (e.originalEvent.shiftKey && (e.originalEvent.buttons === 1)) {
+                            paintTile(this);
+                        }
+                    });
 
-        function changeFloor(floorName) {
-            currentImageLayer.setUrl(floorPlans[floorName]);
-        }
-
-        // Generate Tiles
-        for (var x = 0; x < imgWidth; x += gridSize) {
-            for (var y = 0; y < imgHeight; y += gridSize) {
-                var p1 = map.unproject([x, y], map.getMaxZoom()-1);
-                var p2 = map.unproject([x + gridSize, y + gridSize], map.getMaxZoom()-1);
-                
-                var rect = L.rectangle([p1, p2], {
-                    color: "rgba(51, 136, 255, 0.2)", // Faint blue lines
-                    weight: 1,
-                    fillOpacity: 0,
-                    interactive: true,
-                    className: 'tile' 
-                });
-
-                // Paint on MouseOver if mouse is down
-                rect.on('mousedown', function(e) { 
-                    if(!map.dragging.enabled()) {
-                        isDrawing = true;
-                        paintTile(e.target);
-                    }
-                });
-                
-                rect.on('mouseover', function(e) {
-                    if (isDrawing && !map.dragging.enabled()) {
-                        paintTile(e.target);
-                    }
-                });
-
-                rect.addTo(tileLayer);
+                    tileLookup[id] = rect;
+                    rect.addTo(tileLayers);
+                }
             }
         }
-
-        window.addEventListener('mouseup', () => { isDrawing = false; });
 
         function paintTile(tile) {
-            tile.setStyle({
-                fillColor: '#ff0000',
-                fillOpacity: 0.5,
-                color: 'transparent'
-            });
-            tile.isHighPriority = true; // Custom property for exporting
+            var id = tile.tileId;
+            if (!selections[currentFloor].includes(id)) {
+                selections[currentFloor].push(id);
+                tile.setStyle({ fillColor: '#ff0000', fillOpacity: 0.5, color: 'transparent' });
+            }
         }
 
-        // 5. DATA EXPORT (For the "Submission" step)
-        function exportData() {
-            var selectedTiles = [];
-            tileLayer.eachLayer(function(layer) {
-                if (layer.isHighPriority) {
-                    selectedTiles.push(layer.getBounds());
+        // --- 4. FLOOR SWITCHING ---
+        function switchFloor(newFloor) {
+            currentFloor = newFloor;
+            imgOverlay.setUrl(floorPlans[newFloor]);
+            
+            // Redraw all tiles to show previous selections for this specific floor
+            Object.keys(tileLookup).forEach(id => {
+                var tile = tileLookup[id];
+                if (selections[currentFloor].includes(id)) {
+                    tile.setStyle({ fillColor: '#ff0000', fillOpacity: 0.5, color: 'transparent' });
+                } else {
+                    tile.setStyle({ fillColor: 'transparent', fillOpacity: 0, color: "rgba(51, 136, 255, 0.15)" });
                 }
             });
-            console.log("Selected Tiles:", selectedTiles);
-            alert("Check console for tile data! You have selected " + selectedTiles.length + " tiles.");
         }
+
+        // --- 5. SUBMISSION ---
+        function submitToCloud() {
+            console.log("Submitting these picks:", selections);
+            alert("Ready to sync! Paste your Firebase code here to send data to your roommates.");
+            // We will add the Firebase 'push' code here next!
+        }
+
+        generateGrid();
     </script>
 </body>
 </html>
