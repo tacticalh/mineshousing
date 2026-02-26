@@ -1,67 +1,113 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Mines Housing Heatmap</title>
+    <title>Mines Housing Tactical Map</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
-        #map { height: 90vh; width: 100%; background: #222; }
-        body { font-family: sans-serif; text-align: center; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background: #1a1a1a; color: white; }
+        #map { height: 85vh; width: 100%; background: #222; border-top: 2px solid #333; }
+        .controls { padding: 15px; background: #222; display: flex; justify-content: center; align-items: center; gap: 20px; }
+        select { padding: 8px 12px; border-radius: 5px; border: none; background: #444; color: white; cursor: pointer; }
+        h1 { margin: 10px 0; font-size: 1.5rem; color: #d4af37; /* Mines Gold */ }
+        .legend { font-size: 0.8rem; color: #ccc; }
     </style>
 </head>
 <body>
+
     <h1>Mines Housing Tactical Map</h1>
+    
+    <div class="controls">
+        <div>
+            <label>Current Floor: </label>
+            <select id="floorSelect" onchange="changeFloor(this.value)">
+                <option value="Floor 1">Floor 1</option>
+                <option value="Floor 2">Floor 2</option>
+                <option value="Floor 3">Floor 3</option>
+            </select>
+        </div>
+        <div class="legend">Click tiles to toggle demand (Red = High Priority)</div>
+    </div>
+
     <div id="map"></div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        // 1. Initialize the Map
-        var map = L.map('map', { crs: L.CRS.Simple, minZoom: -1 });
+        // 1. CONFIGURATION - Change these to match your actual PNG sizes
+        var imgWidth = 2000;
+        var imgHeight = 1500;
+        var gridSize = 60; // Size of selection tiles in pixels
 
-        // 2. Set your image dimensions (Change these to your image's actual px size!)
-        var w = 2000, h = 1500;
         var floorPlans = {
             "Floor 1": "floor1.png",
             "Floor 2": "floor2.png",
             "Floor 3": "floor3.png"
         };
 
-        var southWest = map.unproject([0, h], map.getMaxZoom()-1);
-        var northEast = map.unproject([w, 0], map.getMaxZoom()-1);
+        // 2. SETUP MAP (Simple Coordinate System)
+        var map = L.map('map', {
+            crs: L.CRS.Simple,
+            minZoom: -1,
+            maxZoom: 2
+        });
+
+        // Map pixel coordinates to Leaflet coordinates
+        var southWest = map.unproject([0, imgHeight], map.getMaxZoom()-1);
+        var northEast = map.unproject([imgWidth, 0], map.getMaxZoom()-1);
         var bounds = new L.LatLngBounds(southWest, northEast);
 
-        L.imageOverlay(url, bounds).addTo(map);
+        // 3. LOAD INITIAL IMAGE
+        var currentImageLayer = L.imageOverlay(floorPlans["Floor 1"], bounds).addTo(map);
         map.fitBounds(bounds);
+
+        // 4. FUNCTION TO SWITCH FLOORS
         function changeFloor(floorName) {
             var newUrl = floorPlans[floorName];
-            // This removes the old image and puts the new one up
-            currentLayer.setUrl(newUrl); 
+            currentImageLayer.setUrl(newUrl);
+            
+            // Optional: Reset tiles when switching floors? 
+            // For now, they stay drawn on top.
         }
-        // 3. THE "EASY" PART: Automatic Grid Generation
-        var gridSize = 50; // Size of each tile in pixels
-        
-        for (var x = 0; x < w; x += gridSize) {
-            for (var y = 0; y < h; y += gridSize) {
+
+        // 5. GENERATE THE SELECTION GRID
+        // We use a LayerGroup so we can manage all tiles together
+        var tileLayer = L.layerGroup().addTo(map);
+
+        for (var x = 0; x < imgWidth; x += gridSize) {
+            for (var y = 0; y < imgHeight; y += gridSize) {
                 
-                // Create a rectangle for every grid spot
-                var b = [map.unproject([x, y], map.getMaxZoom()-1), 
-                         map.unproject([x + gridSize, y + gridSize], map.getMaxZoom()-1)];
+                // Calculate corners of the tile
+                var p1 = map.unproject([x, y], map.getMaxZoom()-1);
+                var p2 = map.unproject([x + gridSize, y + gridSize], map.getMaxZoom()-1);
+                var tileBounds = [p1, p2];
                 
-                var rect = L.rectangle(b, {
+                var rect = L.rectangle(tileBounds, {
                     color: "#3388ff",
                     weight: 1,
-                    fillOpacity: 0.1 // Mostly see-through
-                }).addTo(map);
+                    fillOpacity: 0.05, // Almost invisible until clicked
+                    interactive: true
+                });
 
-                // Add a click function to each tile
+                // Interaction Logic
                 rect.on('click', function(e) {
-                    var layer = e.target;
-                    // Toggle effect: darken when clicked
-                    if (layer.options.fillOpacity === 0.1) {
-                        layer.setStyle({fillOpacity: 0.7, fillColor: 'red'});
+                    var tile = e.target;
+                    if (tile.options.fillOpacity < 0.2) {
+                        // Mark as high demand
+                        tile.setStyle({
+                            fillColor: '#ff0000',
+                            fillOpacity: 0.6,
+                            color: '#ff0000'
+                        });
                     } else {
-                        layer.setStyle({fillOpacity: 0.1, fillColor: '#3388ff'});
+                        // Reset to neutral
+                        tile.setStyle({
+                            fillColor: '#3388ff',
+                            fillOpacity: 0.05,
+                            color: '#3388ff'
+                        });
                     }
                 });
+
+                rect.addTo(tileLayer);
             }
         }
     </script>
