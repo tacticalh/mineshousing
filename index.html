@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mines Housing Heatmap</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        #map { height: 90vh; width: 100%; background: #222; }
+        body { font-family: sans-serif; text-align: center; }
+    </style>
+</head>
+<body>
+    <h1>Mines Housing Tactical Map</h1>
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // 1. Initialize the Map
+        var map = L.map('map', { crs: L.CRS.Simple, minZoom: -1 });
+
+        // 2. Set your image dimensions (Change these to your image's actual px size!)
+        var w = 2000, h = 1500;
+        var floorPlans = {
+            "Floor 1": "floor1.png",
+            "Floor 2": "floor2.png",
+            "Floor 3": "floor3.png"
+        };
+
+        var southWest = map.unproject([0, h], map.getMaxZoom()-1);
+        var northEast = map.unproject([w, 0], map.getMaxZoom()-1);
+        var bounds = new L.LatLngBounds(southWest, northEast);
+
+        L.imageOverlay(url, bounds).addTo(map);
+        map.fitBounds(bounds);
+        function changeFloor(floorName) {
+            var newUrl = floorPlans[floorName];
+            // This removes the old image and puts the new one up
+            currentLayer.setUrl(newUrl); 
+        }
+        // 3. THE "EASY" PART: Automatic Grid Generation
+        var gridSize = 50; // Size of each tile in pixels
+        
+        for (var x = 0; x < w; x += gridSize) {
+            for (var y = 0; y < h; y += gridSize) {
+                
+                // Create a rectangle for every grid spot
+                var b = [map.unproject([x, y], map.getMaxZoom()-1), 
+                         map.unproject([x + gridSize, y + gridSize], map.getMaxZoom()-1)];
+                
+                var rect = L.rectangle(b, {
+                    color: "#3388ff",
+                    weight: 1,
+                    fillOpacity: 0.1 // Mostly see-through
+                }).addTo(map);
+
+                // Add a click function to each tile
+                rect.on('click', function(e) {
+                    var layer = e.target;
+                    // Toggle effect: darken when clicked
+                    if (layer.options.fillOpacity === 0.1) {
+                        layer.setStyle({fillOpacity: 0.7, fillColor: 'red'});
+                    } else {
+                        layer.setStyle({fillOpacity: 0.1, fillColor: '#3388ff'});
+                    }
+                });
+            }
+        }
+    </script>
+</body>
+</html>
