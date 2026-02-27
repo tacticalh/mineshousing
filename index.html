@@ -72,8 +72,8 @@
     <!-- Welcome Pop-up -->
     <div id="welcomeModal">
         <div class="modal-content">
-            <h2>Lookout Housing Map Guide</h2>
-            <p>Welcome to the Lookout Housing Map! Use this to coordinate room picks with your roommates.</p>
+            <h2>Lookout Housing Map</h2>
+            <p>Hello friends, use this map to coordinate where we want to room, relatively. If anyone has the more detailed floor plan files, send them to Jacob. Use computer please👍</p>
             
             <div class="instruction-grid">
                 <div class="instruction-item">
@@ -102,7 +102,7 @@
         <select id="floorSelect" onchange="switchFloor(this.value)">
             <option value="Floor 1">Floor 1</option>
             <option value="Floor 2">Floor 2</option>
-            <option value="Floor 3">Floor 3</option>
+            <option value="Floor 3-6">Floor 3-6</option>
         </select>
 
         <button id="btn-me" class="btn-active" onclick="toggleView('individual')">My View</button>
@@ -139,12 +139,12 @@
         var gridSize = 25; 
         var currentFloor = "Floor 1";
         var viewMode = "individual"; 
-        var selections = { "Floor 1": [], "Floor 2": [], "Floor 3": [] };
+        var selections = { "Floor 1": [], "Floor 2": [], "Floor 3-6": [] };
 
         var floorPlans = {
             "Floor 1": "floor1.png",
             "Floor 2": "floor2.png",
-            "Floor 3": "floor3.png"
+            "Floor 3-6": "floor3.png"
         };
 
         // --- 3. MODAL LOGIC ---
