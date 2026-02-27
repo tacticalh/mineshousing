@@ -8,9 +8,9 @@
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
 
     <style>
-        body { font-family: 'Segoe UI', sans-serif; margin: 0; background: #1a1a1a; color: white; overflow: hidden; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; background: #1a1a1a; color: white; overflow: hidden; }
         
-        /* FIX: Prevents the blue selection box when Shift+Dragging */
+        /* Box Zoom Disabled via JS, Selection disabled via CSS */
         #map { 
             height: 90vh; 
             width: 100%; 
@@ -19,18 +19,31 @@
             -webkit-user-select: none; 
         }
 
-        .controls { padding: 10px; background: #222; display: flex; justify-content: center; gap: 15px; align-items: center; border-bottom: 1px solid #444; }
-        .hint { font-size: 0.8rem; color: #aaa; }
+        .controls { padding: 10px; background: #222; display: flex; justify-content: center; gap: 12px; align-items: center; border-bottom: 1px solid #444; flex-wrap: wrap;}
+        .hint { font-size: 0.75rem; color: #aaa; }
         
-        button { cursor: pointer; background: #444; color: white; border: none; padding: 8px 15px; font-weight: bold; border-radius: 4px; transition: 0.2s; }
+        .status-container {
+            display: flex;
+            flex-direction: column;
+            border-left: 1px solid #444;
+            padding-left: 15px;
+            min-width: 150px;
+        }
+
+        .counter { font-weight: bold; color: #d4af37; font-size: 0.9rem; }
+        .timestamp { font-size: 0.65rem; color: #888; margin-top: 2px; }
+        
+        button { cursor: pointer; background: #444; color: white; border: none; padding: 6px 12px; font-weight: bold; border-radius: 4px; transition: 0.2s; font-size: 0.85rem;}
         button:hover { background: #555; }
         
-        /* Mines Gold for active buttons */
         .btn-active { background: #d4af37 !important; color: black !important; }
-        .btn-submit { background: #28a745; color: white; margin-left: 20px; }
+        .btn-submit { background: #28a745; color: white; }
+        .btn-reset { background: #c82333; color: white; }
+
+        select { padding: 5px; border-radius: 4px; background: #333; color: white; border: 1px solid #555; }
     </style>
 </head>
-<body>
+<body oncontextmenu="return false;">
 
     <div class="controls">
         <select id="floorSelect" onchange="switchFloor(this.value)">
@@ -39,14 +52,18 @@
             <option value="Floor 3">Floor 3</option>
         </select>
 
-        <div style="border-left: 1px solid #444; height: 20px; margin: 0 10px;"></div>
-
         <button id="btn-me" class="btn-active" onclick="toggleView('individual')">My View</button>
         <button id="btn-group" onclick="toggleView('aggregate')">Group Heatmap</button>
 
-        <div class="hint"><b>Drag:</b> Move | <b>Shift+Drag:</b> Paint</div>
+        <div class="hint"><b>Shift+Drag</b> to Paint</div>
 
+        <button class="btn-reset" onclick="resetCurrentFloor()">Reset Floor</button>
         <button class="btn-submit" onclick="submitToCloud()">Submit My Picks</button>
+        
+        <div class="status-container">
+            <div id="roommateCounter" class="counter">Submissions: 0</div>
+            <div id="lastUpdated" class="timestamp">Syncing...</div>
+        </div>
     </div>
 
     <div id="map"></div>
@@ -66,8 +83,8 @@
         firebase.initializeApp(firebaseConfig);
         const db = firebase.database();
 
-        // --- 2. STATE & CONFIG ---
-        var imgWidth = 2000, imgHeight = 1500; // ADJUST THESE TO YOUR IMAGE PIXELS
+        // --- 2. STATE ---
+        var imgWidth = 2000, imgHeight = 1500; 
         var gridSize = 25; 
         var currentFloor = "Floor 1";
         var viewMode = "individual"; 
@@ -80,7 +97,17 @@
         };
 
         // --- 3. MAP INIT ---
-        var map = L.map('map', { crs: L.CRS.Simple, minZoom: -1, maxZoom: 3 });
+        var map = L.map('map', { 
+            crs: L.CRS.Simple, 
+            minZoom: -1, 
+            maxZoom: 3,
+            boxZoom: false,      // REMOVES THE VIEW BOX
+            doubleClickZoom: false
+        });
+        
+        // Block text selection on the map
+        map.getContainer().onselectstart = function() { return false; };
+
         var southWest = map.unproject([0, imgHeight], map.getMaxZoom()-1);
         var northEast = map.unproject([imgWidth, 0], map.getMaxZoom()-1);
         var bounds = new L.LatLngBounds(southWest, northEast);
@@ -108,10 +135,9 @@
                     
                     rect.tileId = id;
 
-                    // FIX: Prevent selection box on mousedown
                     rect.on('mousedown', function(e) {
                         if (e.originalEvent.shiftKey) {
-                            e.originalEvent.preventDefault(); 
+                            L.DomEvent.stop(e); 
                             paintTile(this);
                         }
                     });
@@ -129,10 +155,17 @@
         }
 
         function paintTile(tile) {
-            if (viewMode !== "individual") return; // Can't paint while in Group View
+            if (viewMode !== "individual") return; 
             if (!selections[currentFloor].includes(tile.tileId)) {
                 selections[currentFloor].push(tile.tileId);
                 tile.setStyle({ fillColor: '#ff0000', fillOpacity: 0.5, color: 'transparent' });
+            }
+        }
+
+        function resetCurrentFloor() {
+            if (confirm("Wipe your marks for " + currentFloor + "?")) {
+                selections[currentFloor] = [];
+                refreshTiles();
             }
         }
 
@@ -161,13 +194,12 @@
             if (mode === "individual") refreshTiles(); else fetchHeatmap();
         }
 
-        // --- 5. HEATMAP COLOR LOGIC ---
         function getHeatColor(count, total) {
             if (count === 0) return 'transparent';
             var ratio = count / total;
-            if (ratio <= 0.34) return "#00ff00"; // Green
-            if (ratio <= 0.67) return "#ffff00"; // Yellow
-            return "#ff0000"; // Red
+            if (ratio <= 0.34) return "#28a745"; // Green
+            if (ratio <= 0.67) return "#ffc107"; // Yellow
+            return "#dc3545"; // Red
         }
 
         function fetchHeatmap() {
@@ -180,39 +212,66 @@
                 Object.keys(tileLookup).forEach(id => {
                     let hitCount = 0;
                     users.forEach(u => {
-                        if (data[u][currentFloor] && data[u][currentFloor].includes(id)) hitCount++;
+                        if (data[u] && data[u][currentFloor] && data[u][currentFloor].includes(id)) hitCount++;
                     });
                     
                     var color = getHeatColor(hitCount, total);
                     tileLookup[id].setStyle({
                         fillColor: color,
-                        fillOpacity: hitCount > 0 ? 0.6 : 0,
+                        fillOpacity: hitCount > 0 ? 0.7 : 0,
                         color: hitCount > 0 ? 'transparent' : "rgba(51, 136, 255, 0.1)"
                     });
                 });
             });
         }
 
-        // --- 6. ADMIN & SUBMISSION ---
+        // --- 5. CLOUD INTERACTION ---
         function submitToCloud() {
             const name = prompt("Enter your name:");
             if (!name) return;
             
-            db.ref('submissions/' + name).once('value', (snap) => {
-                if (snap.exists()) {
-                    if (!confirm("Overwrite your existing picks?")) return;
-                }
-                db.ref('submissions/' + name).set(selections).then(() => alert("Saved!"));
+            db.ref('submissions/' + name).set(selections).then(() => {
+                alert("Saved to cloud!");
             });
         }
 
-        // Run this in console to clear a user: deleteUser('Name')
-        function deleteUser(target) {
-            const pw = prompt("Admin Pass:");
+        // Listen for data changes to update counter and timestamp
+        db.ref('submissions').on('value', (snap) => {
+            const data = snap.val();
+            const count = data ? Object.keys(data).length : 0;
+            document.getElementById('roommateCounter').innerText = "Submissions: " + count;
+            document.getElementById('lastUpdated').innerText = "Sync: " + new Date().toLocaleTimeString();
+        });
+
+        // --- 6. ADMIN COMMANDS (Console Only) ---
+
+        // List all users: listUsers()
+        window.listUsers = function() {
+            const pw = prompt("Admin Password:");
+            if (pw !== "Mines2026") return console.error("Access Denied");
+            
+            db.ref('submissions').once('value', (snap) => {
+                const data = snap.val();
+                if (!data) return console.log("No users found.");
+                console.log("%c--- REGISTERED USERS ---", "color: #d4af37; font-weight: bold;");
+                Object.keys(data).forEach(name => console.log("- " + name));
+                console.log("-------------------------");
+                alert("Check the browser console (F12) for the list of names.");
+            });
+        };
+
+        // Delete a user: deleteUser("name")
+        window.deleteUser = function(target) {
+            const pw = prompt("Admin Password:");
             if (pw === "Mines2026") {
-                db.ref('submissions/' + target).remove().then(() => location.reload());
+                db.ref('submissions/' + target).remove().then(() => {
+                    alert("Deleted user: " + target);
+                    location.reload();
+                });
+            } else {
+                alert("Access Denied.");
             }
-        }
+        };
 
         generateGrid();
     </script>
