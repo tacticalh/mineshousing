@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Mines Housing Tactical Map</title>
+    <title>Lookout Housing Map</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
@@ -10,24 +10,24 @@
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; background: #1a1a1a; color: white; overflow: hidden; }
         
-        /* Box Zoom Disabled via JS, Selection disabled via CSS */
         #map { 
             height: 90vh; 
             width: 100%; 
             background: #222; 
             user-select: none; 
             -webkit-user-select: none; 
+            outline: none;
         }
 
         .controls { padding: 10px; background: #222; display: flex; justify-content: center; gap: 12px; align-items: center; border-bottom: 1px solid #444; flex-wrap: wrap;}
-        .hint { font-size: 0.75rem; color: #aaa; }
         
         .status-container {
             display: flex;
             flex-direction: column;
             border-left: 1px solid #444;
             padding-left: 15px;
-            min-width: 150px;
+            min-width: 1500px; /* Adjusted for layout stability */
+            min-width: fit-content;
         }
 
         .counter { font-weight: bold; color: #d4af37; font-size: 0.9rem; }
@@ -41,9 +41,62 @@
         .btn-reset { background: #c82333; color: white; }
 
         select { padding: 5px; border-radius: 4px; background: #333; color: white; border: 1px solid #555; }
+
+        /* Welcome Modal Styles */
+        #welcomeModal {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+        }
+        .modal-content {
+            background: #2c2c2c;
+            padding: 30px;
+            border-radius: 12px;
+            max-width: 500px;
+            text-align: center;
+            border: 2px solid #d4af37;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        .modal-content h2 { color: #d4af37; margin-top: 0; }
+        .instruction-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; text-align: left; margin: 20px 0; }
+        .instruction-item { background: #3d3d3d; padding: 10px; border-radius: 6px; font-size: 0.9rem; }
+        .instruction-item b { color: #d4af37; display: block; margin-bottom: 4px; }
     </style>
 </head>
 <body oncontextmenu="return false;">
+
+    <!-- Welcome Pop-up -->
+    <div id="welcomeModal">
+        <div class="modal-content">
+            <h2>Lookout Housing Map Guide</h2>
+            <p>Welcome to the Lookout Housing Map! Use this to coordinate room picks with your roommates.</p>
+            
+            <div class="instruction-grid">
+                <div class="instruction-item">
+                    <b>Left Click + Drag</b>
+                    Paint cells red to mark where you want to live.
+                </div>
+                <div class="instruction-item">
+                    <b>Right Click / Middle</b>
+                    Drag the map around to move your view.
+                </div>
+                <div class="instruction-item">
+                    <b>Group Heatmap</b>
+                    Switch views to see where everyone else is planning to pick.
+                </div>
+                <div class="instruction-item">
+                    <b>Submit</b>
+                    Saves your picks to the cloud for the rest of your group.
+                </div>
+            </div>
+
+            <button onclick="closeModal()" style="padding: 10px 40px; background: #d4af37; color: black; font-size: 1rem;">Got it!</button>
+        </div>
+    </div>
 
     <div class="controls">
         <select id="floorSelect" onchange="switchFloor(this.value)">
@@ -54,8 +107,6 @@
 
         <button id="btn-me" class="btn-active" onclick="toggleView('individual')">My View</button>
         <button id="btn-group" onclick="toggleView('aggregate')">Group Heatmap</button>
-
-        <div class="hint"><b>Shift+Drag</b> to Paint</div>
 
         <button class="btn-reset" onclick="resetCurrentFloor()">Reset Floor</button>
         <button class="btn-submit" onclick="submitToCloud()">Submit My Picks</button>
@@ -96,16 +147,22 @@
             "Floor 3": "floor3.png"
         };
 
-        // --- 3. MAP INIT ---
+        // --- 3. MODAL LOGIC ---
+        function closeModal() {
+            document.getElementById('welcomeModal').style.display = 'none';
+        }
+
+        // --- 4. MAP INIT ---
         var map = L.map('map', { 
             crs: L.CRS.Simple, 
             minZoom: -1, 
             maxZoom: 3,
-            boxZoom: false,      // REMOVES THE VIEW BOX
-            doubleClickZoom: false
+            boxZoom: false,
+            doubleClickZoom: false,
+            dragging: false,
+            preferCanvas: true // Performance boost for many vectors
         });
         
-        // Block text selection on the map
         map.getContainer().onselectstart = function() { return false; };
 
         var southWest = map.unproject([0, imgHeight], map.getMaxZoom()-1);
@@ -117,7 +174,31 @@
         var tileLayers = L.layerGroup().addTo(map);
         var tileLookup = {}; 
 
-        // --- 4. GRID LOGIC ---
+        let isRightDragging = false;
+        let lastPos = { x: 0, y: 0 };
+
+        map.on('mousedown', function(e) {
+            // Button 2 is right click, Button 1 is middle click
+            if (e.originalEvent.button === 2 || e.originalEvent.button === 1) {
+                isRightDragging = true;
+                lastPos = { x: e.originalEvent.clientX, y: e.originalEvent.clientY };
+            }
+        });
+
+        window.addEventListener('mousemove', function(e) {
+            if (isRightDragging) {
+                let dx = e.clientX - lastPos.x;
+                let dy = e.clientY - lastPos.y;
+                map.panBy([-dx, -dy], { animate: false });
+                lastPos = { x: e.clientX, y: e.clientY };
+            }
+        }, { passive: true });
+
+        window.addEventListener('mouseup', function() {
+            isRightDragging = false;
+        });
+
+        // --- 5. GRID LOGIC ---
         function generateGrid() {
             tileLayers.clearLayers();
             for (var x = 0; x < imgWidth; x += gridSize) {
@@ -130,20 +211,21 @@
                         color: "rgba(51, 136, 255, 0.1)",
                         weight: 1,
                         fillOpacity: 0,
-                        interactive: true
+                        interactive: true,
+                        bubblingMouseEvents: false // Prevent event bubbling for better performance
                     });
                     
                     rect.tileId = id;
 
                     rect.on('mousedown', function(e) {
-                        if (e.originalEvent.shiftKey) {
-                            L.DomEvent.stop(e); 
+                        if (e.originalEvent.button === 0) {
                             paintTile(this);
                         }
                     });
 
                     rect.on('mouseover', function(e) {
-                        if (e.originalEvent.shiftKey && (e.originalEvent.buttons === 1)) {
+                        // Check if left button is pressed
+                        if (e.originalEvent.buttons === 1) {
                             paintTile(this);
                         }
                     });
@@ -158,6 +240,7 @@
             if (viewMode !== "individual") return; 
             if (!selections[currentFloor].includes(tile.tileId)) {
                 selections[currentFloor].push(tile.tileId);
+                // Optimized style update
                 tile.setStyle({ fillColor: '#ff0000', fillOpacity: 0.5, color: 'transparent' });
             }
         }
@@ -176,14 +259,14 @@
         }
 
         function refreshTiles() {
+            // Batch style updates can be faster than individual calls in some browsers
             Object.keys(tileLookup).forEach(id => {
                 var tile = tileLookup[id];
                 var isSelected = selections[currentFloor].includes(id);
-                tile.setStyle({ 
-                    fillColor: isSelected ? '#ff0000' : 'transparent', 
-                    fillOpacity: isSelected ? 0.5 : 0,
-                    color: "rgba(51, 136, 255, 0.15)"
-                });
+                var style = isSelected ? 
+                    { fillColor: '#ff0000', fillOpacity: 0.5, color: 'transparent' } : 
+                    { fillColor: 'transparent', fillOpacity: 0, color: "rgba(51, 136, 255, 0.15)" };
+                tile.setStyle(style);
             });
         }
 
@@ -197,9 +280,9 @@
         function getHeatColor(count, total) {
             if (count === 0) return 'transparent';
             var ratio = count / total;
-            if (ratio <= 0.34) return "#28a745"; // Green
-            if (ratio <= 0.67) return "#ffc107"; // Yellow
-            return "#dc3545"; // Red
+            if (ratio <= 0.34) return "#28a745"; 
+            if (ratio <= 0.67) return "#ffc107"; 
+            return "#dc3545"; 
         }
 
         function fetchHeatmap() {
@@ -225,17 +308,14 @@
             });
         }
 
-        // --- 5. CLOUD INTERACTION ---
         function submitToCloud() {
             const name = prompt("Enter your name:");
             if (!name) return;
-            
             db.ref('submissions/' + name).set(selections).then(() => {
                 alert("Saved to cloud!");
             });
         }
 
-        // Listen for data changes to update counter and timestamp
         db.ref('submissions').on('value', (snap) => {
             const data = snap.val();
             const count = data ? Object.keys(data).length : 0;
@@ -243,13 +323,10 @@
             document.getElementById('lastUpdated').innerText = "Sync: " + new Date().toLocaleTimeString();
         });
 
-        // --- 6. ADMIN COMMANDS (Console Only) ---
-
-        // List all users: listUsers()
+        // --- ADMIN ---
         window.listUsers = function() {
             const pw = prompt("Admin Password:");
             if (pw !== "Mines2026") return console.error("Access Denied");
-            
             db.ref('submissions').once('value', (snap) => {
                 const data = snap.val();
                 if (!data) return console.log("No users found.");
@@ -260,7 +337,6 @@
             });
         };
 
-        // Delete a user: deleteUser("name")
         window.deleteUser = function(target) {
             const pw = prompt("Admin Password:");
             if (pw === "Mines2026") {
@@ -268,8 +344,6 @@
                     alert("Deleted user: " + target);
                     location.reload();
                 });
-            } else {
-                alert("Access Denied.");
             }
         };
 
