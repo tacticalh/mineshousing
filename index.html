@@ -3,12 +3,17 @@
 <head>
     <title>Mines Housing Tactical Map</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
+
     <style>
         body { font-family: sans-serif; margin: 0; background: #1a1a1a; color: white; overflow: hidden; }
         #map { height: 90vh; width: 100%; background: #222; }
         .controls { padding: 10px; background: #222; display: flex; justify-content: center; gap: 15px; align-items: center; border-bottom: 1px solid #444; }
         .hint { font-size: 0.8rem; color: #aaa; }
         button { cursor: pointer; background: #d4af37; color: black; border: none; padding: 8px 15px; font-weight: bold; border-radius: 4px; }
+        .btn-heatmap { background: #3388ff; color: white; }
     </style>
 </head>
 <body>
@@ -19,20 +24,32 @@
             <option value="Floor 2">Floor 2</option>
             <option value="Floor 3">Floor 3</option>
         </select>
-        <div class="hint"><b>Drag:</b> Move Map | <b>Shift + Drag:</b> Paint Tiles</div>
+        <div class="hint"><b>Drag:</b> Move | <b>Shift+Drag:</b> Paint</div>
         <button onclick="submitToCloud()">Submit My Picks</button>
+        <button class="btn-heatmap" onclick="fetchHeatmap()">Show Group Heatmap</button>
     </div>
 
     <div id="map"></div>
 
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        // --- 1. CONFIG & STATE ---
-        var imgWidth = 2000, imgHeight = 1500;
+        // --- 1. FIREBASE CONFIG (YOUR APP) ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyCJMadnmplIo9C9qFsV4_8BI_RgYtKXEiA",
+            authDomain: "housing-53f24.firebaseapp.com",
+            databaseURL: "https://housing-53f24-default-rtdb.firebaseio.com",
+            projectId: "housing-53f24",
+            storageBucket: "housing-53f24.firebasestorage.app",
+            messagingSenderId: "168437453675",
+            appId: "1:168437453675:web:7ee3aa725d1bb7f86eb22e"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        // --- 2. MAP SETUP ---
+        var imgWidth = 2000, imgHeight = 1500; // Adjust to your PNG size
         var gridSize = 30;
         var currentFloor = "Floor 1";
-        
-        // This stores which IDs are selected per floor: { "Floor 1": [id1, id2], "Floor 2": [] }
         var selections = { "Floor 1": [], "Floor 2": [], "Floor 3": [] };
 
         var floorPlans = {
@@ -41,14 +58,7 @@
             "Floor 3": "floor3.png"
         };
 
-        // --- 2. INITIALIZE MAP ---
-        var map = L.map('map', {
-            crs: L.CRS.Simple,
-            minZoom: -1,
-            maxZoom: 3,
-            dragging: true // Default dragging back on!
-        });
-
+        var map = L.map('map', { crs: L.CRS.Simple, minZoom: -1, maxZoom: 3 });
         var southWest = map.unproject([0, imgHeight], map.getMaxZoom()-1);
         var northEast = map.unproject([imgWidth, 0], map.getMaxZoom()-1);
         var bounds = new L.LatLngBounds(southWest, northEast);
@@ -57,7 +67,7 @@
 
         // --- 3. GRID SYSTEM ---
         var tileLayers = L.layerGroup().addTo(map);
-        var tileLookup = {}; // To easily find tiles by ID
+        var tileLookup = {}; 
 
         function generateGrid() {
             tileLayers.clearLayers();
@@ -66,23 +76,18 @@
                     var id = x + "_" + y;
                     var p1 = map.unproject([x, y], map.getMaxZoom()-1);
                     var p2 = map.unproject([x + gridSize, y + gridSize], map.getMaxZoom()-1);
-                    
                     var rect = L.rectangle([p1, p2], {
-                        color: "rgba(51, 136, 255, 0.15)", // Very faint blue
+                        color: "rgba(51, 136, 255, 0.15)",
                         weight: 1,
                         fillOpacity: 0,
                         interactive: true
                     });
-                    
                     rect.tileId = id;
-                    
-                    // Interaction: Only paint if Shift is held
                     rect.on('mouseover mousedown', function(e) {
                         if (e.originalEvent.shiftKey && (e.originalEvent.buttons === 1)) {
                             paintTile(this);
                         }
                     });
-
                     tileLookup[id] = rect;
                     rect.addTo(tileLayers);
                 }
@@ -90,34 +95,65 @@
         }
 
         function paintTile(tile) {
-            var id = tile.tileId;
-            if (!selections[currentFloor].includes(id)) {
-                selections[currentFloor].push(id);
+            if (!selections[currentFloor].includes(tile.tileId)) {
+                selections[currentFloor].push(tile.tileId);
                 tile.setStyle({ fillColor: '#ff0000', fillOpacity: 0.5, color: 'transparent' });
             }
         }
 
-        // --- 4. FLOOR SWITCHING ---
         function switchFloor(newFloor) {
             currentFloor = newFloor;
             imgOverlay.setUrl(floorPlans[newFloor]);
-            
-            // Redraw all tiles to show previous selections for this specific floor
+            refreshTiles();
+        }
+
+        function refreshTiles() {
             Object.keys(tileLookup).forEach(id => {
                 var tile = tileLookup[id];
-                if (selections[currentFloor].includes(id)) {
-                    tile.setStyle({ fillColor: '#ff0000', fillOpacity: 0.5, color: 'transparent' });
-                } else {
-                    tile.setStyle({ fillColor: 'transparent', fillOpacity: 0, color: "rgba(51, 136, 255, 0.15)" });
-                }
+                var isSelected = selections[currentFloor].includes(id);
+                tile.setStyle({ 
+                    fillColor: isSelected ? '#ff0000' : 'transparent', 
+                    fillOpacity: isSelected ? 0.5 : 0,
+                    color: "rgba(51, 136, 255, 0.15)"
+                });
             });
         }
 
-        // --- 5. SUBMISSION ---
+        // --- 4. CLOUD FUNCTIONS ---
         function submitToCloud() {
-            console.log("Submitting these picks:", selections);
-            alert("Ready to sync! Paste your Firebase code here to send data to your roommates.");
-            // We will add the Firebase 'push' code here next!
+            const name = prompt("Enter your name:");
+            if (!name) return;
+            db.ref('submissions/' + name).set(selections)
+                .then(() => alert("Submitted!"))
+                .catch(e => alert("Error: " + e.message));
+        }
+
+        function fetchHeatmap() {
+            db.ref('submissions').once('value', (snapshot) => {
+                const data = snapshot.val();
+                if (!data) return alert("No data yet!");
+                
+                const users = Object.keys(data);
+                const count = users.length;
+
+                // Reset grid
+                Object.values(tileLookup).forEach(t => t.setStyle({ fillOpacity: 0 }));
+
+                // Add up all user picks for the current floor
+                users.forEach(u => {
+                    const picks = data[u][currentFloor] || [];
+                    picks.forEach(id => {
+                        if (tileLookup[id]) {
+                            let op = tileLookup[id].options.fillOpacity;
+                            tileLookup[id].setStyle({
+                                fillColor: 'red',
+                                fillOpacity: op + (1 / count),
+                                color: 'transparent'
+                            });
+                        }
+                    });
+                });
+            });
         }
 
         generateGrid();
