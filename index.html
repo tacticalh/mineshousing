@@ -8,12 +8,26 @@
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
 
     <style>
-        body { font-family: sans-serif; margin: 0; background: #1a1a1a; color: white; overflow: hidden; }
-        #map { height: 90vh; width: 100%; background: #222; }
+        body { font-family: 'Segoe UI', sans-serif; margin: 0; background: #1a1a1a; color: white; overflow: hidden; }
+        
+        /* FIX: Prevents the blue selection box when Shift+Dragging */
+        #map { 
+            height: 90vh; 
+            width: 100%; 
+            background: #222; 
+            user-select: none; 
+            -webkit-user-select: none; 
+        }
+
         .controls { padding: 10px; background: #222; display: flex; justify-content: center; gap: 15px; align-items: center; border-bottom: 1px solid #444; }
         .hint { font-size: 0.8rem; color: #aaa; }
-        button { cursor: pointer; background: #d4af37; color: black; border: none; padding: 8px 15px; font-weight: bold; border-radius: 4px; }
-        .btn-heatmap { background: #3388ff; color: white; }
+        
+        button { cursor: pointer; background: #444; color: white; border: none; padding: 8px 15px; font-weight: bold; border-radius: 4px; transition: 0.2s; }
+        button:hover { background: #555; }
+        
+        /* Mines Gold for active buttons */
+        .btn-active { background: #d4af37 !important; color: black !important; }
+        .btn-submit { background: #28a745; color: white; margin-left: 20px; }
     </style>
 </head>
 <body>
@@ -24,15 +38,21 @@
             <option value="Floor 2">Floor 2</option>
             <option value="Floor 3">Floor 3</option>
         </select>
+
+        <div style="border-left: 1px solid #444; height: 20px; margin: 0 10px;"></div>
+
+        <button id="btn-me" class="btn-active" onclick="toggleView('individual')">My View</button>
+        <button id="btn-group" onclick="toggleView('aggregate')">Group Heatmap</button>
+
         <div class="hint"><b>Drag:</b> Move | <b>Shift+Drag:</b> Paint</div>
-        <button onclick="submitToCloud()">Submit My Picks</button>
-        <button class="btn-heatmap" onclick="fetchHeatmap()">Show Group Heatmap</button>
+
+        <button class="btn-submit" onclick="submitToCloud()">Submit My Picks</button>
     </div>
 
     <div id="map"></div>
 
     <script>
-        // --- 1. FIREBASE CONFIG (YOUR APP) ---
+        // --- 1. FIREBASE CONFIG ---
         const firebaseConfig = {
             apiKey: "AIzaSyCJMadnmplIo9C9qFsV4_8BI_RgYtKXEiA",
             authDomain: "housing-53f24.firebaseapp.com",
@@ -46,10 +66,11 @@
         firebase.initializeApp(firebaseConfig);
         const db = firebase.database();
 
-        // --- 2. MAP SETUP ---
-        var imgWidth = 2000, imgHeight = 1500; // Adjust to your PNG size
-        var gridSize = 30;
+        // --- 2. STATE & CONFIG ---
+        var imgWidth = 2000, imgHeight = 1500; // ADJUST THESE TO YOUR IMAGE PIXELS
+        var gridSize = 25; 
         var currentFloor = "Floor 1";
+        var viewMode = "individual"; 
         var selections = { "Floor 1": [], "Floor 2": [], "Floor 3": [] };
 
         var floorPlans = {
@@ -58,6 +79,7 @@
             "Floor 3": "floor3.png"
         };
 
+        // --- 3. MAP INIT ---
         var map = L.map('map', { crs: L.CRS.Simple, minZoom: -1, maxZoom: 3 });
         var southWest = map.unproject([0, imgHeight], map.getMaxZoom()-1);
         var northEast = map.unproject([imgWidth, 0], map.getMaxZoom()-1);
@@ -65,10 +87,10 @@
         var imgOverlay = L.imageOverlay(floorPlans[currentFloor], bounds).addTo(map);
         map.fitBounds(bounds);
 
-        // --- 3. GRID SYSTEM ---
         var tileLayers = L.layerGroup().addTo(map);
         var tileLookup = {}; 
 
+        // --- 4. GRID LOGIC ---
         function generateGrid() {
             tileLayers.clearLayers();
             for (var x = 0; x < imgWidth; x += gridSize) {
@@ -76,18 +98,30 @@
                     var id = x + "_" + y;
                     var p1 = map.unproject([x, y], map.getMaxZoom()-1);
                     var p2 = map.unproject([x + gridSize, y + gridSize], map.getMaxZoom()-1);
+                    
                     var rect = L.rectangle([p1, p2], {
-                        color: "rgba(51, 136, 255, 0.15)",
+                        color: "rgba(51, 136, 255, 0.1)",
                         weight: 1,
                         fillOpacity: 0,
                         interactive: true
                     });
+                    
                     rect.tileId = id;
-                    rect.on('mouseover mousedown', function(e) {
+
+                    // FIX: Prevent selection box on mousedown
+                    rect.on('mousedown', function(e) {
+                        if (e.originalEvent.shiftKey) {
+                            e.originalEvent.preventDefault(); 
+                            paintTile(this);
+                        }
+                    });
+
+                    rect.on('mouseover', function(e) {
                         if (e.originalEvent.shiftKey && (e.originalEvent.buttons === 1)) {
                             paintTile(this);
                         }
                     });
+
                     tileLookup[id] = rect;
                     rect.addTo(tileLayers);
                 }
@@ -95,6 +129,7 @@
         }
 
         function paintTile(tile) {
+            if (viewMode !== "individual") return; // Can't paint while in Group View
             if (!selections[currentFloor].includes(tile.tileId)) {
                 selections[currentFloor].push(tile.tileId);
                 tile.setStyle({ fillColor: '#ff0000', fillOpacity: 0.5, color: 'transparent' });
@@ -104,7 +139,7 @@
         function switchFloor(newFloor) {
             currentFloor = newFloor;
             imgOverlay.setUrl(floorPlans[newFloor]);
-            refreshTiles();
+            if (viewMode === "individual") refreshTiles(); else fetchHeatmap();
         }
 
         function refreshTiles() {
@@ -119,41 +154,64 @@
             });
         }
 
-        // --- 4. CLOUD FUNCTIONS ---
-        function submitToCloud() {
-            const name = prompt("Enter your name:");
-            if (!name) return;
-            db.ref('submissions/' + name).set(selections)
-                .then(() => alert("Submitted!"))
-                .catch(e => alert("Error: " + e.message));
+        function toggleView(mode) {
+            viewMode = mode;
+            document.getElementById('btn-me').className = (mode === 'individual' ? 'btn-active' : '');
+            document.getElementById('btn-group').className = (mode === 'aggregate' ? 'btn-active' : '');
+            if (mode === "individual") refreshTiles(); else fetchHeatmap();
+        }
+
+        // --- 5. HEATMAP COLOR LOGIC ---
+        function getHeatColor(count, total) {
+            if (count === 0) return 'transparent';
+            var ratio = count / total;
+            if (ratio <= 0.34) return "#00ff00"; // Green
+            if (ratio <= 0.67) return "#ffff00"; // Yellow
+            return "#ff0000"; // Red
         }
 
         function fetchHeatmap() {
             db.ref('submissions').once('value', (snapshot) => {
                 const data = snapshot.val();
-                if (!data) return alert("No data yet!");
-                
+                if (!data) return;
                 const users = Object.keys(data);
-                const count = users.length;
+                const total = users.length;
 
-                // Reset grid
-                Object.values(tileLookup).forEach(t => t.setStyle({ fillOpacity: 0 }));
-
-                // Add up all user picks for the current floor
-                users.forEach(u => {
-                    const picks = data[u][currentFloor] || [];
-                    picks.forEach(id => {
-                        if (tileLookup[id]) {
-                            let op = tileLookup[id].options.fillOpacity;
-                            tileLookup[id].setStyle({
-                                fillColor: 'red',
-                                fillOpacity: op + (1 / count),
-                                color: 'transparent'
-                            });
-                        }
+                Object.keys(tileLookup).forEach(id => {
+                    let hitCount = 0;
+                    users.forEach(u => {
+                        if (data[u][currentFloor] && data[u][currentFloor].includes(id)) hitCount++;
+                    });
+                    
+                    var color = getHeatColor(hitCount, total);
+                    tileLookup[id].setStyle({
+                        fillColor: color,
+                        fillOpacity: hitCount > 0 ? 0.6 : 0,
+                        color: hitCount > 0 ? 'transparent' : "rgba(51, 136, 255, 0.1)"
                     });
                 });
             });
+        }
+
+        // --- 6. ADMIN & SUBMISSION ---
+        function submitToCloud() {
+            const name = prompt("Enter your name:");
+            if (!name) return;
+            
+            db.ref('submissions/' + name).once('value', (snap) => {
+                if (snap.exists()) {
+                    if (!confirm("Overwrite your existing picks?")) return;
+                }
+                db.ref('submissions/' + name).set(selections).then(() => alert("Saved!"));
+            });
+        }
+
+        // Run this in console to clear a user: deleteUser('Name')
+        function deleteUser(target) {
+            const pw = prompt("Admin Pass:");
+            if (pw === "Mines2026") {
+                db.ref('submissions/' + target).remove().then(() => location.reload());
+            }
         }
 
         generateGrid();
